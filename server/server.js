@@ -1,8 +1,9 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
-const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
+const { createClient } = require("@supabase/supabase-js");
 const { Server } = require("socket.io");
 
 const app = express();
@@ -14,7 +15,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5174",
+    origin: "*",
     methods: ["GET", "POST"],
   },
 });
@@ -28,29 +29,13 @@ const ADMIN_PASSWORD = "collegechat123";
 const JWT_SECRET = "collegechat_secret_2026";
 
 // =========================
-// MONGODB
+// SUPABASE
 // =========================
 
-mongoose
-  .connect("mongodb://127.0.0.1:27017/collegechat")
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.log("MongoDB error:", err.message));
-
-// =========================
-// MESSAGE SCHEMA
-// =========================
-
-const messageSchema = new mongoose.Schema({
-  sender: String,
-  receiver: String,
-  text: String,
-  time: {
-    type: Date,
-    default: Date.now,
-  },
-});
-
-const Message = mongoose.model("Message", messageSchema);
+const supabase = createClient(
+  "https://gitsamqnaevgnnvxjwoc.supabase.co",
+  process.env.SUPABASE_SECRET_KEY
+);
 
 // =========================
 // ADMIN LOGIN
@@ -69,22 +54,16 @@ app.post("/admin/login", (req, res) => {
   }
 
   const token = jwt.sign(
-    {
-      username: ADMIN_USERNAME,
-    },
+    { username: ADMIN_USERNAME },
     JWT_SECRET,
-    {
-      expiresIn: "2h",
-    }
+    { expiresIn: "2h" }
   );
 
-  res.json({
-    token,
-  });
+  res.json({ token });
 });
 
 // =========================
-// ADMIN AUTH MIDDLEWARE
+// ADMIN AUTH
 // =========================
 
 function verifyAdmin(req, res, next) {
@@ -115,12 +94,18 @@ function verifyAdmin(req, res, next) {
 
 app.get("/admin/messages", verifyAdmin, async (req, res) => {
   try {
-    const messages = await Message.find()
-      .sort({ time: -1 })
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .order("time", { ascending: false })
       .limit(1000);
 
-    res.json(messages);
+    if (error) throw error;
+
+    res.json(data);
   } catch (error) {
+    console.log("Load messages error:", error.message);
+
     res.status(500).json({
       message: "Failed to load messages",
     });
@@ -136,12 +121,19 @@ app.delete(
   verifyAdmin,
   async (req, res) => {
     try {
-      await Message.findByIdAndDelete(req.params.id);
+      const { error } = await supabase
+        .from("messages")
+        .delete()
+        .eq("id", req.params.id);
+
+      if (error) throw error;
 
       res.json({
         message: "Message deleted",
       });
     } catch (error) {
+      console.log("Delete error:", error.message);
+
       res.status(500).json({
         message: "Delete failed",
       });
@@ -165,10 +157,7 @@ let waitingTimers = {};
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
-  // =========================
   // JOIN
-  // =========================
-
   socket.on("join", (user) => {
     socket.user = user;
 
@@ -181,41 +170,30 @@ io.on("connection", (socket) => {
     socket.emit("joined", user);
   });
 
-  // =========================
   // FIND SOMEONE
-  // =========================
-
   socket.on("findSomeone", () => {
     findMatch(socket);
   });
 
-  // =========================
   // NEXT
-  // =========================
-
   socket.on("next", () => {
     const oldPartnerId = matchedUsers[socket.id];
 
-    // Clear any previous waiting timer
     clearWaitingTimer(socket.id);
 
     if (oldPartnerId) {
-      // Remember previous conversation
       recentPartners[socket.id]?.add(oldPartnerId);
       recentPartners[oldPartnerId]?.add(socket.id);
 
-      // Remove current match
       delete matchedUsers[socket.id];
       delete matchedUsers[oldPartnerId];
 
-      // Remove both from waiting pool first
       waitingUsers = waitingUsers.filter(
         (user) =>
           user.socketId !== socket.id &&
           user.socketId !== oldPartnerId
       );
 
-      // Put OLD partner into waiting pool
       const oldPartnerSocket =
         io.sockets.sockets.get(oldPartnerId);
 
@@ -225,10 +203,7 @@ io.on("connection", (socket) => {
           user: oldPartnerSocket.user,
         });
 
-        // Tell old partner that the previous person left
         io.to(oldPartnerId).emit("partnerLeft");
-
-        // Tell old partner to start searching
         io.to(oldPartnerId).emit("waiting");
 
         console.log(
@@ -238,14 +213,10 @@ io.on("connection", (socket) => {
       }
     }
 
-    // Current user goes into matching
     findMatch(socket);
   });
 
-  // =========================
   // TYPING
-  // =========================
-
   socket.on("typing", () => {
     const partnerId = matchedUsers[socket.id];
 
@@ -254,10 +225,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // =========================
   // STOP TYPING
-  // =========================
-
   socket.on("stopTyping", () => {
     const partnerId = matchedUsers[socket.id];
 
@@ -266,10 +234,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // =========================
   // SEND MESSAGE
-  // =========================
-
   socket.on("sendMessage", async (message) => {
     const partnerId = matchedUsers[socket.id];
 
@@ -287,12 +252,17 @@ io.on("connection", (socket) => {
       sender: socket.user.username,
       receiver: partner.user.username,
       text: text,
-      time: new Date(),
+      time: new Date().toISOString(),
     };
 
-    // SAVE TO MONGODB
     try {
-      const savedMessage = await Message.create(newMessage);
+      const { data, error } = await supabase
+        .from("messages")
+        .insert([newMessage])
+        .select()
+        .single();
+
+      if (error) throw error;
 
       console.log(
         `[MESSAGE] ${newMessage.sender} -> ${newMessage.receiver}: ${text}`
@@ -300,12 +270,12 @@ io.on("connection", (socket) => {
 
       io.to(socket.id).emit(
         "receiveMessage",
-        savedMessage
+        data
       );
 
       io.to(partnerId).emit(
         "receiveMessage",
-        savedMessage
+        data
       );
     } catch (error) {
       console.log(
@@ -315,10 +285,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // =========================
   // DISCONNECT
-  // =========================
-
   socket.on("disconnect", () => {
     clearWaitingTimer(socket.id);
 
@@ -352,17 +319,14 @@ io.on("connection", (socket) => {
 function findMatch(socket, allowRecent = false) {
   if (!socket.user) return;
 
-  // Remove user from waiting pool
   waitingUsers = waitingUsers.filter(
     (user) => user.socketId !== socket.id
   );
 
-  // Don't search if already matched
   if (matchedUsers[socket.id]) {
     return;
   }
 
-  // Find users who have NOT recently talked
   const availableUsers = waitingUsers.filter(
     (user) => {
       const alreadyTalked =
@@ -376,10 +340,6 @@ function findMatch(socket, allowRecent = false) {
       );
     }
   );
-
-  // =========================
-  // NEW PERSON AVAILABLE
-  // =========================
 
   if (availableUsers.length > 0) {
     clearWaitingTimer(socket.id);
@@ -430,10 +390,6 @@ function findMatch(socket, allowRecent = false) {
 
     return;
   }
-
-  // =========================
-  // PREVIOUS PERSON ALLOWED
-  // =========================
 
   if (allowRecent) {
     const fallbackUsers =
@@ -494,10 +450,6 @@ function findMatch(socket, allowRecent = false) {
     }
   }
 
-  // =========================
-  // WAITING
-  // =========================
-
   waitingUsers.push({
     socketId: socket.id,
     user: socket.user,
@@ -509,11 +461,6 @@ function findMatch(socket, allowRecent = false) {
     "Waiting:",
     socket.user.username
   );
-
-  // =========================
-  // AFTER 3 SECONDS
-  // ALLOW PREVIOUS PARTNER
-  // =========================
 
   clearWaitingTimer(socket.id);
 
