@@ -3,7 +3,7 @@ import { io } from "socket.io-client";
 import Admin from "./Admin";
 import "./App.css";
 
-const socket = io("https://oxide-suites-reduce-entity.trycloudflare.com", {
+const socket = io("https://college-chat-1.onrender.com", {
   transports: ["websocket", "polling"],
 });
 

@@ -17,7 +17,7 @@ function Admin() {
 
     try {
       const response = await fetch(
-        "http://localhost:5000/admin/login",
+        "https://college-chat-1.onrender.com",
         {
           method: "POST",
           headers: {
@@ -48,7 +48,7 @@ function Admin() {
   const loadMessages = async () => {
     try {
       const response = await fetch(
-        "http://localhost:5000/admin/messages",
+        "https://college-chat-1.onrender.com",
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -78,7 +78,7 @@ function Admin() {
 
     try {
       await fetch(
-        `http://localhost:5000/admin/messages/${id}`,
+        `https://college-chat-1.onrender.com/${id}`,
         {
           method: "DELETE",
           headers: {
